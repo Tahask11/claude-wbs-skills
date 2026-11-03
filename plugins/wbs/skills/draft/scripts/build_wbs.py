@@ -439,135 +439,262 @@ def week_starts(m):
 
 # ---------- xlsx ----------
 
+# palette
+NAVY, BLUE, MID, PALE, PALER, BAND = "1F3864", "305496", "8EA9DB", "D9E1F2", "EEF2F9", "F7F9FC"
+GRID, MUTED = "D0D7E5", "7F7F7F"
+STATUS_COLORS = {  # status text -> (fill, font)
+    "open": ("FFF2CC", "9C5700"), "active": ("E2EFDA", "375623"),
+    "confirmed": ("E2EFDA", "375623"), "answered": ("E2EFDA", "375623"),
+    "rejected": ("F8CBAD", "9C0006"), "reversed": ("F8CBAD", "9C0006"),
+    "superseded": ("EDEDED", MUTED),
+}
+TITLE_ROW, NOTE_ROW, HEAD_ROW, FIRST_ROW = 1, 2, 3, 4
+
+
 def write_xlsx(m, path):
     from openpyxl import Workbook
-    from openpyxl.formatting.rule import FormulaRule
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.formatting.rule import CellIsRule, FormulaRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.properties import PageSetupProperties
 
-    bold = Font(bold=True)
-    head_fill = PatternFill("solid", fgColor="D9E1F2")
-    grey_font = Font(color="808080", italic=True)
-    grey_fill = PatternFill("solid", fgColor="EDEDED")
-    red_fill = PatternFill("solid", fgColor="F8CBAD")
+    fill = lambda c: PatternFill("solid", fgColor=c, bgColor=c)
+    body_font = Font(name="Calibri", size=10)
+    bold_font = Font(name="Calibri", size=10, bold=True)
+    head_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    title_font = Font(name="Calibri", size=16, bold=True, color=NAVY)
+    note_font = Font(name="Calibri", size=9, italic=True, color=MUTED)
+    side = Side(style="thin", color=GRID)
+    border = Border(left=side, right=side, top=side, bottom=side)
+    head_border = Border(bottom=Side(style="medium", color=NAVY))
+    top = Alignment(vertical="top")
+    wrap = Alignment(wrap_text=True, vertical="top")
+    center = Alignment(horizontal="center", vertical="top")
     date_fmt = "yyyy-mm-dd"
+    name = m.project_value("Name") or "Project"
 
     wb = Workbook()
     wb.remove(wb.active)
 
-    def sheet(title, headers, rows, widths=None):
-        ws = wb.create_sheet(title)
-        ws.append([HEADER_NOTE])
-        ws["A1"].font = grey_font
-        ws.append(headers)
-        for c in ws[2]:
-            c.font = bold
-            c.fill = head_fill
-        for r in rows:
-            ws.append(list(r))
-        ws.freeze_panes = "A3"
-        last = get_column_letter(len(headers))
-        ws.auto_filter.ref = f"A2:{last}{max(ws.max_row, 2)}"
+    def frame(ws, title, tab):
+        ws.sheet_properties.tabColor = tab
+        ws.sheet_view.showGridLines = False
+        ws.cell(TITLE_ROW, 1, f"{name} — {title}").font = title_font
+        ws.row_dimensions[TITLE_ROW].height = 26
+        ws.cell(NOTE_ROW, 1, HEADER_NOTE).font = note_font
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        ws.print_title_rows = f"{HEAD_ROW}:{HEAD_ROW}"
+        ws.oddFooter.center.text = "Page &P of &N"
+
+    def header(ws, headers):
         for idx, h in enumerate(headers, 1):
-            col = get_column_letter(idx)
+            c = ws.cell(HEAD_ROW, idx, h)
+            c.font, c.fill, c.border = head_font, fill(NAVY), head_border
+            c.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[HEAD_ROW].height = 20
+
+    def status_rules(ws, col, last_row):
+        if last_row < FIRST_ROW:
+            return
+        rng = f"{col}{FIRST_ROW}:{col}{last_row}"
+        for key, (bg, fg) in STATUS_COLORS.items():
+            ws.conditional_formatting.add(rng, FormulaRule(
+                formula=[f'ISNUMBER(SEARCH("{key}",{col}{FIRST_ROW}))'],
+                fill=fill(bg), font=Font(bold=True, color=fg), stopIfTrue=True))
+
+    def open_rule(ws, ref):
+        ws.conditional_formatting.add(ref, CellIsRule(
+            operator="equal", formula=['"[OPEN]"'],
+            fill=fill("FFF2CC"), font=Font(bold=True, color="9C5700")))
+
+    def sheet(title, headers, rows, tab, widths=None, centered=(), status_col=None, band=True):
+        ws = wb.create_sheet(title)
+        frame(ws, title, tab)
+        header(ws, headers)
+        for n, r in enumerate(rows, FIRST_ROW):
+            for idx, v in enumerate(r, 1):
+                c = ws.cell(n, idx, v)
+                c.font, c.border = body_font, border
+                c.alignment = center if headers[idx - 1] in centered else top
+                if band and (n - FIRST_ROW) % 2:
+                    c.fill = fill(BAND)
+        last_row = FIRST_ROW + len(rows) - 1
+        ws.freeze_panes = f"A{FIRST_ROW}"
+        last = get_column_letter(len(headers))
+        ws.auto_filter.ref = f"A{HEAD_ROW}:{last}{max(last_row, HEAD_ROW)}"
+        for idx, h in enumerate(headers, 1):
             if widths and h in widths:
                 w = widths[h]
             else:
                 vals = [len(str(h))] + [len(str(r[idx - 1])) for r in rows if r[idx - 1] is not None]
-                w = min(max(vals) + 2, 50)
-            ws.column_dimensions[col].width = w
-            if w >= 40:
-                for row in ws.iter_rows(min_row=3, min_col=idx, max_col=idx):
-                    row[0].alignment = Alignment(wrap_text=True, vertical="top")
+                w = min(max(vals) + 3, 50)
+            ws.column_dimensions[get_column_letter(idx)].width = w
+            if w >= 30:
+                for row in ws.iter_rows(min_row=FIRST_ROW, min_col=idx, max_col=idx):
+                    row[0].alignment = wrap
+        if status_col and status_col in headers:
+            status_rules(ws, get_column_letter(headers.index(status_col) + 1), last_row)
+        if rows:
+            open_rule(ws, f"A{FIRST_ROW}:{last}{last_row}")
         return ws
 
     # 1 Summary
-    sheet("Summary", ["Key", "Value"], summary_rows(m))
+    rows = summary_rows(m)
+    ws = sheet("Summary", ["Key", "Value"], rows, NAVY, widths={"Key": 28, "Value": 70})
+    for n, (k, _) in enumerate(rows, FIRST_ROW):
+        ws.cell(n, 1).font = bold_font
+        ws.cell(n, 2).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+        if k in ("Total effort h", "Work packages", "Project start", "Project finish"):
+            for c in ws[n][:2]:
+                c.fill, c.font = fill(PALE), Font(name="Calibri", size=11, bold=True, color=NAVY)
+        if k in ("Open questions", "Open assumptions", "Unscheduled work packages"):
+            ws.conditional_formatting.add(f"B{n}", CellIsRule(
+                operator="greaterThan", formula=["0"], fill=fill("FFF2CC"),
+                font=Font(bold=True, color="9C5700")))
 
     # 2 WBS
     wr = wbs_rows(m)
-    ws = sheet("WBS", WBS_COLS, [[r[c] for c in WBS_COLS] for r in wr],
-               widths={"Start": 12, "Finish": 12})
-    for n, r in enumerate(wr, 3):
-        ws.cell(n, 2).alignment = Alignment(indent=r["Level"] - 1)
+    ws = sheet("WBS", WBS_COLS, [[r[c] for c in WBS_COLS] for r in wr], BLUE, band=False,
+               centered=("WBS ID", "Level", "Owner", "Effort h", "Duration d", "Start", "Finish"),
+               widths={"WBS ID": 9, "Name": 40, "Level": 7, "Deliverable": 34, "Scope": 42,
+                       "Owner": 10, "Effort h": 9, "Duration d": 10, "Predecessors": 16,
+                       "Req IDs": 14, "Acceptance": 36, "Start": 12, "Finish": 12})
+    level_fill = {1: fill(PALE), 2: fill(PALER)}
+    for n, r in enumerate(wr, FIRST_ROW):
+        ws.cell(n, 2).alignment = Alignment(indent=(r["Level"] - 1) * 2, vertical="top",
+                                            wrap_text=True)
+        ws.cell(n, 7).number_format = "#,##0"
+        ws.cell(n, 8).number_format = "0"
         for c in (12, 13):
             ws.cell(n, c).number_format = date_fmt
-        if r["_parent"]:
+        if r["Level"] == 1:
             for c in ws[n]:
-                c.font = bold
+                c.font = Font(name="Calibri", size=11, bold=True, color=NAVY)
+                c.fill = level_fill[1]
+                c.border = Border(left=side, right=side, top=Side(style="medium", color=NAVY),
+                                  bottom=side)
+        elif r["_parent"]:
+            for c in ws[n]:
+                c.font, c.fill = bold_font, level_fill[2]
+    total_row = FIRST_ROW + len(wr)
+    roots = [n for n, r in enumerate(wr, FIRST_ROW) if r["Level"] == 1]
+    ws.cell(total_row, 2, "Total").font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    if roots:
+        ws.cell(total_row, 7, "=" + "+".join(f"G{n}" for n in roots))
+    for c in ws[total_row][:len(WBS_COLS)]:
+        c.fill, c.border = fill(NAVY), border
+        c.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        c.alignment = center
+    ws.cell(total_row, 2).alignment = top
+    ws.cell(total_row, 7).number_format = "#,##0"
 
     # 3 Gantt
     weeks = week_starts(m)
     ws = wb.create_sheet("Gantt")
-    ws.append([HEADER_NOTE])
-    ws["A1"].font = grey_font
-    ws.append(["WBS ID", "Name", "Start", "Finish"] + weeks)
-    for c in ws[2]:
-        c.font = bold
-        c.fill = head_fill
-    for c in ws[2][4:]:
-        c.number_format = "dd-mmm"
-        c.alignment = Alignment(text_rotation=90)
+    frame(ws, "Gantt", "548235")
+    header(ws, ["WBS ID", "Name", "Start", "Finish"] + weeks)
+    for k, c in enumerate(ws[HEAD_ROW][4:]):
+        c.number_format = "dd mmm"
+        c.alignment = Alignment(text_rotation=90, horizontal="center")
+        c.fill = fill(NAVY if weeks[k].month % 2 else BLUE)
+    ws.row_dimensions[HEAD_ROW].height = 44
+    # month labels above week columns
+    for k, w in enumerate(weeks):
+        if k == 0 or w.month != weeks[k - 1].month:
+            c = ws.cell(NOTE_ROW, 5 + k, w.strftime("%b %Y"))
+            c.font = Font(name="Calibri", size=9, bold=True, color=NAVY)
     parent_rows, leaf_rows = [], []
-    for n, i in enumerate(m.order, 3):
-        ws.cell(n, 1, i)
-        ws.cell(n, 2, m.names[i]).alignment = Alignment(indent=m.level[i] - 1)
+    last_col = get_column_letter(4 + max(len(weeks), 1))
+    for n, i in enumerate(m.order, FIRST_ROW):
+        ws.cell(n, 1, i).alignment = center
+        ws.cell(n, 2, m.names[i]).alignment = Alignment(indent=(m.level[i] - 1) * 2)
         if m.children[i]:
             # parent dates roll up from the rows below, so edits to child dates propagate
             last = n + len([d for d in m.order if d.startswith(i + ".")])
             ws.cell(n, 3, f'=IF(COUNT(C{n+1}:C{last})=0,"",MIN(C{n+1}:C{last}))')
             ws.cell(n, 4, f'=IF(COUNT(D{n+1}:D{last})=0,"",MAX(D{n+1}:D{last}))')
-            for c in ws[n][:4]:
-                c.font = bold
             parent_rows.append(n)
         else:
             s, f = m.sched.get(i, (None, None))
             ws.cell(n, 3, s)
             ws.cell(n, 4, f)
             leaf_rows.append(n)
+        for col in range(1, 5 + len(weeks)):
+            c = ws.cell(n, col)
+            c.border = Border(bottom=Side(style="hair", color=GRID),
+                              right=Side(style="hair", color=GRID) if col > 4 else side,
+                              left=side if col <= 4 else None)
+            if col <= 4:
+                c.font = bold_font if m.children[i] else body_font
+                if m.level[i] == 1:
+                    c.fill = fill(PALE)
+                    c.font = Font(name="Calibri", size=10, bold=True, color=NAVY)
         ws.cell(n, 3).number_format = date_fmt
         ws.cell(n, 4).number_format = date_fmt
-    ws.freeze_panes = "E3"
-    last_col = get_column_letter(4 + max(len(weeks), 1))
-    ws.auto_filter.ref = f"A2:{last_col}{max(ws.max_row, 2)}"
-    for col, w in zip("ABCD", (10, 30, 12, 12)):
+        ws.cell(n, 3).alignment = ws.cell(n, 4).alignment = center
+    ws.freeze_panes = f"E{FIRST_ROW}"
+    ws.auto_filter.ref = f"A{HEAD_ROW}:{last_col}{max(ws.max_row, HEAD_ROW)}"
+    for col, w in zip("ABCD", (9, 44, 12, 12)):
         ws.column_dimensions[col].width = w
     for k in range(len(weeks)):
-        ws.column_dimensions[get_column_letter(5 + k)].width = 4
+        ws.column_dimensions[get_column_letter(5 + k)].width = 3.6
     if weeks:
         fc = get_column_letter(5)
-        for rows, color in ((parent_rows, "305496"), (leaf_rows, "9BC2E6")):
+        last_row = FIRST_ROW + len(m.order) - 1
+        for rows, color in ((parent_rows, NAVY), (leaf_rows, MID)):
             if rows:
                 # relative refs are anchored to the first cell of the rule's range
                 r0 = rows[0]
-                formula = f'AND(ISNUMBER($C{r0}),ISNUMBER($D{r0}),{fc}$2<=$D{r0},{fc}$2+6>=$C{r0})'
+                formula = (f"AND(ISNUMBER($C{r0}),ISNUMBER($D{r0}),"
+                           f"{fc}${HEAD_ROW}<=$D{r0},{fc}${HEAD_ROW}+6>=$C{r0})")
                 rng = " ".join(f"E{r}:{last_col}{r}" for r in rows)
                 ws.conditional_formatting.add(
-                    rng, FormulaRule(formula=[formula], fill=PatternFill("solid", fgColor=color,
-                                                                          bgColor=color)))
+                    rng, FormulaRule(formula=[formula], fill=fill(color), stopIfTrue=True))
+        # current week highlighted; added last so bars take priority
+        ws.conditional_formatting.add(
+            f"E{HEAD_ROW}:{last_col}{last_row}",
+            FormulaRule(formula=[f"AND({fc}${HEAD_ROW}<=TODAY(),{fc}${HEAD_ROW}+6>=TODAY())"],
+                        fill=fill("FCE4D6"), stopIfTrue=False))
 
     # 4 Assumptions
     cols = FILES["assumptions"][1]
-    sheet("Assumptions", cols, [[a[c] for c in cols] for a in m.assumptions])
+    sheet("Assumptions", cols, [[a[c] for c in cols] for a in m.assumptions], "BF8F00",
+          widths={"ID": 8, "Assumption": 48, "Impact if false": 36, "Validate with": 20,
+                  "Status": 11, "Related IDs": 18},
+          centered=("ID", "Status"), status_col="Status")
 
     # 5 Decisions
     cols = FILES["decisions"][1]
-    ws = sheet("Decisions", cols, [[d[c] for c in cols] for d in m.decisions])
-    for n, d in enumerate(m.decisions, 3):
+    ws = sheet("Decisions", cols, [[d[c] for c in cols] for d in m.decisions], "7030A0",
+               widths={"ID": 8, "Date": 11, "Decision": 52, "Source": 10, "Reason": 26,
+                       "Status": 18, "Supersedes": 11},
+               centered=("ID", "Date", "Source", "Supersedes"), status_col="Status")
+    for n, d in enumerate(m.decisions, FIRST_ROW):
         if d["Status"].strip().lower() != "active":
             for c in ws[n]:
-                c.font = grey_font
-                c.fill = grey_fill
+                c.font = Font(name="Calibri", size=10, italic=True, color=MUTED, strike=True)
+                c.fill = fill("F2F2F2")
 
     # 6 Traceability
-    ws = sheet("Traceability", ["Req ID", "Requirement", "Priority", "Work packages"], trace_rows(m))
-    for n, r in enumerate(trace_rows(m), 3):
+    tr = trace_rows(m)
+    ws = sheet("Traceability", ["Req ID", "Requirement", "Priority", "Work packages"], tr, "2E75B6",
+               widths={"Req ID": 9, "Requirement": 56, "Priority": 10, "Work packages": 44},
+               centered=("Req ID", "Priority"))
+    for n, r in enumerate(tr, FIRST_ROW):
+        if r[2].strip().lower() == "must":
+            ws.cell(n, 3).font = bold_font
         if not r[3]:
             for c in ws[n]:
-                c.fill = red_fill
+                c.fill = fill("F8CBAD")
+            ws.cell(n, 4, "NOT COVERED").font = Font(name="Calibri", size=10, bold=True,
+                                                    color="9C0006")
 
     # 7 Open Items
-    sheet("Open Items", ["Type", "ID", "Item", "Blocks / Related", "Status"], open_item_rows(m))
+    sheet("Open Items", ["Type", "ID", "Item", "Blocks / Related", "Status"], open_item_rows(m),
+          "C00000", widths={"Type": 12, "ID": 8, "Item": 60, "Blocks / Related": 22, "Status": 11},
+          centered=("Type", "ID", "Status"), status_col="Status")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
