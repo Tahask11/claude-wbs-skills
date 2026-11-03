@@ -1,0 +1,5 @@
+{
+  "name": "wbs",
+  "version": "1.0.0",
+  "description": "Work breakdown structure workflow: init, gather, draft, check. Builds WBS.xlsx and WBS.md from Markdown working files."
+}

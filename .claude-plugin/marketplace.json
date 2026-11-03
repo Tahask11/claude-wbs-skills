@@ -1,0 +1,14 @@
+{
+  "name": "wbs-marketplace",
+  "description": "WBS workflow plugin for Claude Code",
+  "owner": {
+    "name": "WBS plugin maintainer"
+  },
+  "plugins": [
+    {
+      "name": "wbs",
+      "source": "./plugins/wbs",
+      "description": "Work breakdown structure workflow: /wbs:init, /wbs:gather, /wbs:draft, /wbs:check"
+    }
+  ]
+}
